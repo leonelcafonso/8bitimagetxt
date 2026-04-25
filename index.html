@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Imagem 8-Bit (Versão Estável)</title>
+    <style>
+        body { font-family: sans-serif; background-color: #0f172a; color: #f8fafc; display: flex; flex-direction: column; align-items: center; padding: 20px; margin: 0; }
+        .container { max-width: 500px; width: 100%; display: flex; flex-direction: column; gap: 20px; }
+        .card { background: #1e293b; padding: 20px; border-radius: 12px; border: 1px solid #334155; text-align: center; }
+        h2 { color: #38bdf8; font-size: 1.1rem; }
+        input[type="file"] { display: none; }
+        .btn { display: block; padding: 15px; background-color: #38bdf8; color: #0f172a; border-radius: 8px; font-weight: bold; cursor: pointer; margin: 10px 0; }
+        #output-canvas { margin-top: 20px; border: 2px solid #334155; border-radius: 8px; max-width: 100%; image-rendering: pixelated; }
+        .status { font-size: 0.8rem; color: #94a3b8; min-height: 20px; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div class="card">
+            <h2>1. Gerar Arquivo TXT (Colorido)</h2>
+            <div id="encodeStatus" class="status">Aguardando foto...</div>
+            <label for="imgToTxt" class="btn">Selecionar Foto</label>
+            <input type="file" id="imgToTxt" accept="image/*">
+        </div>
+
+        <div class="card">
+            <h2>2. Ler Arquivo TXT</h2>
+            <div id="decodeStatus" class="status">Aguardando arquivo...</div>
+            <label for="txtToImg" class="btn" style="background-color: #475569; color: white;">Abrir .txt</label>
+            <input type="file" id="txtToImg" accept=".txt">
+            <canvas id="output-canvas" class="hidden"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const MAX_WIDTH = 300; 
+
+        // --- ENCODER ---
+        const imgInput = document.getElementById('imgToTxt');
+        const encodeStatus = document.getElementById('encodeStatus');
+
+        imgInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            encodeStatus.textContent = "Processando imagem...";
+            const reader = new FileReader();
+            
+            reader.onerror = () => { alert("Erro ao ler arquivo!"); };
+            
+            reader.onload = function(event) {
+                const img = new Image();
+                img.onload = function() {
+                    try {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        const scale = MAX_WIDTH / img.width;
+                        canvas.width = MAX_WIDTH;
+                        canvas.height = Math.floor(img.height * scale);
+
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+                        // Cabeçalho
+                        const headerStr = `${canvas.width},${canvas.height}|`;
+                        const headerBytes = new TextEncoder().encode(headerStr);
+                        
+                        // Pixels (RGB332)
+                        const bodyBytes = new Uint8Array(canvas.width * canvas.height);
+                        for (let i = 0; i < pixels.length; i += 4) {
+                            const r3 = Math.round((pixels[i] / 255) * 7);
+                            const g3 = Math.round((pixels[i+1] / 255) * 7);
+                            const b2 = Math.round((pixels[i+2] / 255) * 3);
+                            bodyBytes[i / 4] = (r3 << 5) | (g3 << 2) | b2;
+                        }
+
+                        // Junta Bytes
+                        const finalFile = new Uint8Array(headerBytes.length + bodyBytes.length);
+                        finalFile.set(headerBytes, 0);
+                        finalFile.set(bodyBytes, headerBytes.length);
+
+                        // DISPARO DO DOWNLOAD (Versão Compatível)
+                        const blob = new Blob([finalFile], { type: 'text/plain' });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement("a");
+                        
+                        link.href = url;
+                        link.download = "imagem_8bit.txt";
+                        
+                        // Importante: Adicionar à página antes de clicar para iOS/Mobile
+                        document.body.appendChild(link);
+                        link.click();
+                        
+                        // Limpeza
+                        setTimeout(() => {
+                            document.body.removeChild(link);
+                            URL.revokeObjectURL(url);
+                        }, 100);
+
+                        encodeStatus.textContent = "Download concluído!";
+                    } catch (err) {
+                        console.error(err);
+                        encodeStatus.textContent = "Erro no processamento.";
+                    }
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // --- DECODER ---
+        const txtInput = document.getElementById('txtToImg');
+        const decodeStatus = document.getElementById('decodeStatus');
+        const outputCanvas = document.getElementById('output-canvas');
+        const outCtx = outputCanvas.getContext('2d');
+
+        txtInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            decodeStatus.textContent = "Lendo dados...";
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const bytes = new Uint8Array(event.target.result);
+                let sep = -1;
+                for (let i = 0; i < 20; i++) { if (bytes[i] === 124) { sep = i; break; } }
+
+                if (sep === -1) { alert("Arquivo inválido!"); return; }
+
+                let header = "";
+                for (let i = 0; i < sep; i++) header += String.fromCharCode(bytes[i]);
+                const [w, h] = header.split(',').map(Number);
+
+                outputCanvas.width = w;
+                outputCanvas.height = h;
+                const imgData = outCtx.createImageData(w, h);
+                const d = imgData.data;
+
+                for (let i = 0; i < (w * h); i++) {
+                    const val = bytes[sep + 1 + i];
+                    const r = Math.round(((val >> 5) & 7) * (255/7));
+                    const g = Math.round(((val >> 2) & 7) * (255/7));
+                    const b = Math.round((val & 3) * (255/3));
+                    const idx = i * 4;
+                    d[idx] = r; d[idx+1] = g; d[idx+2] = b; d[idx+3] = 255;
+                }
+
+                outputCanvas.classList.remove('hidden');
+                outCtx.putImageData(imgData, 0, 0);
+                decodeStatus.textContent = "Imagem reconstruída!";
+            };
+            reader.readAsArrayBuffer(file);
+        });
+    </script>
+</body>
+</html>
